@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - currentStreak: number (optional)
+    //   - maxStreak: number (optional)
+    //   - lastPrayerDate: string (optional, YYYY-MM-DD)
+    //   - unlockedMedals: list (optional, string IDs)
+    //   - medalsUnlocked: number (optional)
+    //   - tier: string (optional, Bronze/Silver/Gold/Platinum/Diamond)
+    //   - joinedDate: string (optional, YYYY-MM-DD)
+    //   - settings: map (optional)
+    //
+    // Collection: users/{userId}/logs
+    // Document ID: {date} (YYYY-MM-DD)
+    // Fields:
+    //   - fajr: string (none/on-time/late/qada)
+    //   - dhuhr: string (none/on-time/late/qada)
+    //   - asr: string (none/on-time/late/qada)
+    //   - maghrib: string (none/on-time/late/qada)
+    //   - isha: string (none/on-time/late/qada)
+    //   - count: number
+    //   - date: string (YYYY-MM-DD)
+    //
+    // Collection: profiles
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - displayName: string (required)
+    //   - photoURL: string (required)
+    //   - maxStreak: number (required)
+    //   - tier: string (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid is string &&
+             data.email is string;
+    }
+
+    function isValidProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'photoURL', 'maxStreak', 'tier']) &&
+             data.uid is string &&
+             data.displayName is string &&
+             data.photoURL is string &&
+             data.maxStreak is number &&
+             data.tier is string;
+    }
+
+    function isValidAchievement(data) {
+      return data.keys().hasAll(['id', 'uid', 'displayName', 'photoURL', 'type', 'value', 'timestamp']) &&
+             data.id is string &&
+             data.uid is string &&
+             data.displayName is string &&
+             data.photoURL is string &&
+             data.type in ['streak', 'medal', 'tier'] &&
+             data.value is string &&
+             data.timestamp is string;
+    }
+
+    function isValidLog(data) {
+      let statuses = ['none', 'on-time', 'late', 'qada'];
+      return data.keys().hasAll(['date', 'count']) &&
+             data.date is string &&
+             data.count is number &&
+             data.count >= 0 && data.count <= 5 &&
+             (!('fajr' in data) || data.fajr in statuses) &&
+             (!('dhuhr' in data) || data.dhuhr in statuses) &&
+             (!('asr' in data) || data.asr in statuses) &&
+             (!('maghrib' in data) || data.maghrib in statuses) &&
+             (!('isha' in data) || data.isha in statuses);
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      
+      match /logs/{date} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidLog(request.resource.data);
+        allow update: if isOwner(userId) && isValidLog(request.resource.data);
+      }
+    }
+
+    match /profiles/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidProfile(request.resource.data);
+      allow update: if isOwner(userId) && isValidProfile(request.resource.data);
+    }
+
+    match /achievements/{achievementId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidAchievement(request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

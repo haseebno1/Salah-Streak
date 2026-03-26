@@ -1,0 +1,100 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile with streak data and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "currentStreak": { "type": "integer" },
+        "maxStreak": { "type": "integer" },
+        "lastPrayerDate": { "type": "string", "format": "date" },
+        "unlockedMedals": { "type": "array", "items": { "type": "string" } },
+        "medalsUnlocked": { "type": "integer" },
+        "tier": { "type": "string", "enum": ["Bronze", "Silver", "Gold", "Platinum", "Diamond"] },
+        "joinedDate": { "type": "string", "format": "date" },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "hapticFeedback": { "type": "boolean" },
+            "theme": { "type": "string", "enum": ["light", "dark"] },
+            "language": { "type": "string" },
+            "location": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "latitude": { "type": "number" },
+                "longitude": { "type": "number" }
+              }
+            }
+          }
+        }
+      },
+      "required": ["uid", "email"]
+    },
+    "PrayerLog": {
+      "title": "Prayer Log",
+      "description": "Daily prayer log for a user with status",
+      "type": "object",
+      "properties": {
+        "fajr": { "type": "string", "enum": ["none", "on-time", "late", "qada"] },
+        "dhuhr": { "type": "string", "enum": ["none", "on-time", "late", "qada"] },
+        "asr": { "type": "string", "enum": ["none", "on-time", "late", "qada"] },
+        "maghrib": { "type": "string", "enum": ["none", "on-time", "late", "qada"] },
+        "isha": { "type": "string", "enum": ["none", "on-time", "late", "qada"] },
+        "count": { "type": "integer" },
+        "date": { "type": "string", "format": "date" }
+      },
+      "required": ["date", "count"]
+    },
+    "Profile": {
+      "title": "Public Profile",
+      "description": "Public user profile for leaderboard",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "maxStreak": { "type": "integer" },
+        "tier": { "type": "string" }
+      },
+      "required": ["uid", "displayName", "photoURL", "maxStreak", "tier"]
+    },
+    "Achievement": {
+      "title": "Community Achievement",
+      "description": "A recent achievement shared with the community",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "type": { "type": "string", "enum": ["streak", "medal", "tier"] },
+        "value": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "displayName", "photoURL", "type", "value", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile data"
+    },
+    "/users/{userId}/logs/{date}": {
+      "schema": "PrayerLog",
+      "description": "Daily prayer logs for a user"
+    },
+    "/profiles/{userId}": {
+      "schema": "Profile",
+      "description": "Public user profile data for leaderboard"
+    },
+    "/achievements/{achievementId}": {
+      "schema": "Achievement",
+      "description": "Recent community achievements"
+    }
+  }
+}
