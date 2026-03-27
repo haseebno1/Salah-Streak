@@ -397,6 +397,21 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [todayStr]);
 
+  // Connection Test
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. The client is offline.");
+          setError("Firebase connection failed. Please check your configuration.");
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
   // Theme application
   useEffect(() => {
     if (profile?.settings?.theme === 'dark') {
@@ -750,12 +765,14 @@ export default function App() {
 
 // --- Components ---
 
-function OnboardingPage({ profile, onComplete, onUpdateSettings }: { profile: UserProfile, onComplete: () => void, onUpdateSettings: (s: Partial<UserProfile['settings']>) => void }) {
+ function OnboardingPage({ profile, onComplete, onUpdateSettings }: { profile: UserProfile, onComplete: () => void, onUpdateSettings: (s: Partial<UserProfile['settings']>) => void }) {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
 
   const handleDetectLocation = () => {
     setLoading(true);
+    setOnboardingError(null);
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(async (position) => {
         const { latitude, longitude } = position.coords;
@@ -789,11 +806,11 @@ function OnboardingPage({ profile, onComplete, onUpdateSettings }: { profile: Us
       }, (err) => {
         console.error("Geolocation error:", err);
         setLoading(false);
-        alert("Please enable location permissions to sync prayer times.");
+        setOnboardingError("Please enable location permissions to sync prayer times.");
       });
     } else {
       setLoading(false);
-      alert("Geolocation is not supported by your browser.");
+      setOnboardingError("Geolocation is not supported by your browser.");
     }
   };
 
@@ -815,6 +832,13 @@ function OnboardingPage({ profile, onComplete, onUpdateSettings }: { profile: Us
               <h2 className="text-4xl font-serif font-bold text-salah-green">Location Sync</h2>
               <p className="text-zinc-500">To provide accurate prayer timings, we need to know your location. This ensures your spiritual schedule is perfectly aligned with the sun.</p>
             </div>
+            
+            {onboardingError && (
+              <div className="p-4 bg-red-50 text-red-600 text-sm rounded-2xl border border-red-100">
+                {onboardingError}
+              </div>
+            )}
+
             <button 
               onClick={handleDetectLocation}
               disabled={loading}
