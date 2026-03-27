@@ -18,8 +18,20 @@ import {
   limit,
   getDocs,
   addDoc,
-  Timestamp
+  Timestamp,
+  getDocFromServer
 } from 'firebase/firestore';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
 import { auth, db } from './firebase';
 import { 
   format, 
@@ -81,6 +93,100 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // Types
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, errorInfo: string | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, errorInfo: error.message };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-salah-bg flex flex-col items-center justify-center p-8 text-center space-y-4">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center">
+            <Lock className="w-8 h-8 text-red-600" />
+          </div>
+          <h2 className="text-2xl font-serif font-bold text-zinc-800">Something went wrong</h2>
+          <p className="text-zinc-500 max-w-xs">We encountered an unexpected error. Please try refreshing the page.</p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-6 py-3 bg-salah-green text-white font-bold rounded-2xl shadow-lg"
+          >
+            Refresh App
+          </button>
+          {this.state.errorInfo && (
+            <details className="mt-4 text-left text-[10px] text-zinc-400 bg-zinc-50 p-4 rounded-xl max-w-md overflow-auto">
+              <summary className="cursor-pointer font-bold uppercase tracking-widest">Error Details</summary>
+              <pre className="mt-2 whitespace-pre-wrap">{this.state.errorInfo}</pre>
+            </details>
+          )}
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 interface UserProfile {
   uid: string;
   email: string;
@@ -92,6 +198,7 @@ interface UserProfile {
   unlockedMedals: string[];
   tier: string;
   joinedDate: string;
+  onboardingCompleted: boolean;
   settings: {
     hapticFeedback: boolean;
     theme: 'light' | 'dark';
@@ -100,7 +207,7 @@ interface UserProfile {
       name: string;
       latitude: number;
       longitude: number;
-    };
+    } | null;
     athanAudio: string;
   };
 }
@@ -135,6 +242,16 @@ const PRAYERS = [
   { id: 'isha', name: 'Isha', icon: Moon },
 ] as const;
 
+const DAILY_INSPIRATIONS = [
+  { text: "Verily, with hardship comes ease.", source: "Quran 94:5" },
+  { text: "The best of you are those who are best to their families.", source: "Hadith" },
+  { text: "Allah does not burden a soul beyond that it can bear.", source: "Quran 2:286" },
+  { text: "The most beloved of deeds to Allah are those that are most consistent, even if it is small.", source: "Hadith" },
+  { text: "And seek help through patience and prayer.", source: "Quran 2:45" },
+  { text: "He who follows a path in quest of knowledge, Allah will make the path of Jannah easy to him.", source: "Hadith" },
+  { text: "Remember Me; I will remember you.", source: "Quran 2:152" },
+];
+
 type PrayerId = typeof PRAYERS[number]['id'];
 
 // Helper to get prayer times
@@ -153,6 +270,50 @@ function getPrayerTimesForDate(date: Date, coords: { latitude: number, longitude
   };
 }
 
+// Helper to get prayer times from API
+async function fetchPrayerTimesFromAPI(date: Date, coords: { latitude: number, longitude: number }) {
+  const dateStr = format(date, 'yyyy-MM-dd');
+  
+  try {
+    const response = await fetch(`/api/prayer-times?lat=${coords.latitude}&lon=${coords.longitude}&date=${dateStr}`);
+    const result = await response.json();
+    
+    if (result.status === 'success') {
+      const times = result.data.times;
+      // Convert API times to the format expected by the app
+      // API times are usually in 24h format like "03:48"
+      const parseTime = (timeStr: string) => {
+        const [hours, minutes] = timeStr.split(':');
+        const d = new Date(date);
+        d.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+        return d;
+      };
+
+      const prayerTimes = {
+        fajr: parseTime(times.Fajr),
+        dhuhr: parseTime(times.Dhuhr),
+        asr: parseTime(times.Asr),
+        maghrib: parseTime(times.Maghrib),
+        isha: parseTime(times.Isha),
+      };
+
+      return {
+        fajr: format(prayerTimes.fajr, 'hh:mm a'),
+        dhuhr: format(prayerTimes.dhuhr, 'hh:mm a'),
+        asr: format(prayerTimes.asr, 'hh:mm a'),
+        maghrib: format(prayerTimes.maghrib, 'hh:mm a'),
+        isha: format(prayerTimes.isha, 'hh:mm a'),
+        raw: prayerTimes
+      };
+    }
+  } catch (error) {
+    console.error("Error fetching prayer times from API:", error);
+  }
+  
+  // Fallback to local calculation on error
+  return getPrayerTimesForDate(date, coords);
+}
+
 type Page = 'home' | 'tracker' | 'medals' | 'settings' | 'leaderboard' | 'community';
 
 export default function App() {
@@ -162,6 +323,79 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activePage, setActivePage] = useState<Page>('home');
+  const [notifiedPrayers, setNotifiedPrayers] = useState<Set<string>>(new Set());
+  const [prayerTimes, setPrayerTimes] = useState<any>(null);
+
+  const todayStr = format(startOfToday(), 'yyyy-MM-dd');
+
+  // Notification Permission & Scheduling
+  useEffect(() => {
+    if (!profile?.settings?.location || !prayerTimes) return;
+
+    const requestPermission = async () => {
+      if ("Notification" in window && Notification.permission === "default") {
+        await Notification.requestPermission();
+      }
+    };
+    requestPermission();
+
+    const checkPrayers = () => {
+      const times = prayerTimes.raw;
+      const now = new Date();
+      
+      PRAYERS.forEach(prayer => {
+        const prayerTime = times[prayer.id as keyof typeof times] as Date;
+        const diff = now.getTime() - prayerTime.getTime();
+        
+        // If it's within 1 minute of prayer time and we haven't notified yet
+        if (diff >= 0 && diff < 60000 && !notifiedPrayers.has(prayer.id)) {
+          if (Notification.permission === "granted") {
+            new Notification(`Time for ${prayer.name}`, {
+              body: `It's time for ${prayer.name} prayer. May Allah accept your worship.`,
+              icon: '/favicon.ico'
+            });
+            setNotifiedPrayers(prev => new Set(prev).add(prayer.id));
+          }
+        }
+      });
+    };
+
+    const interval = setInterval(checkPrayers, 30000); // Check every 30 seconds
+    return () => clearInterval(interval);
+  }, [profile?.settings?.location, notifiedPrayers, prayerTimes]);
+
+  // Fetch Prayer Times
+  useEffect(() => {
+    if (!profile?.settings?.location) return;
+    
+    const fetchTimes = async () => {
+      const times = await fetchPrayerTimesFromAPI(new Date(), profile.settings.location);
+      setPrayerTimes(times);
+    };
+    
+    fetchTimes();
+    
+    // Refresh at midnight
+    const now = new Date();
+    const night = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+    const msToMidnight = night.getTime() - now.getTime();
+    const timer = setTimeout(fetchTimes, msToMidnight);
+    
+    return () => clearTimeout(timer);
+  }, [profile?.settings?.location]);
+
+  // Reset notified prayers at midnight
+  useEffect(() => {
+    const now = new Date();
+    const night = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+    const msToMidnight = night.getTime() - now.getTime();
+
+    const timer = setTimeout(() => {
+      setNotifiedPrayers(new Set());
+    }, msToMidnight);
+
+    return () => clearTimeout(timer);
+  }, [todayStr]);
 
   // Theme application
   useEffect(() => {
@@ -171,8 +405,6 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [profile?.settings?.theme]);
-
-  const todayStr = format(startOfToday(), 'yyyy-MM-dd');
 
   // Auth Listener
   useEffect(() => {
@@ -201,15 +433,19 @@ export default function App() {
         
         // Ensure public profile exists/is in sync
         const profileRef = doc(db, 'profiles', user.uid);
-        const profileSnap = await getDoc(profileRef);
-        if (!profileSnap.exists()) {
-          await setDoc(profileRef, {
-            uid: user.uid,
-            displayName: data.displayName,
-            photoURL: data.photoURL,
-            maxStreak: data.maxStreak,
-            tier: data.tier
-          });
+        try {
+          const profileSnap = await getDoc(profileRef);
+          if (!profileSnap.exists()) {
+            await setDoc(profileRef, {
+              uid: user.uid,
+              displayName: data.displayName,
+              photoURL: data.photoURL,
+              maxStreak: data.maxStreak,
+              tier: data.tier
+            });
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'profiles');
         }
       } else {
         const newProfile: UserProfile = {
@@ -223,31 +459,31 @@ export default function App() {
           unlockedMedals: [],
           tier: 'Bronze',
           joinedDate: todayStr,
+          onboardingCompleted: false,
           settings: {
             hapticFeedback: true,
             theme: 'light',
             language: 'English (US)',
-            location: {
-              name: 'London, UK',
-              latitude: 51.5074,
-              longitude: -0.1278
-            },
+            location: null,
             athanAudio: 'Makkah'
           }
         };
-        setDoc(userRef, newProfile);
-        // Sync to public profile
-        setDoc(doc(db, 'profiles', user.uid), {
-          uid: user.uid,
-          displayName: newProfile.displayName,
-          photoURL: newProfile.photoURL,
-          maxStreak: newProfile.maxStreak,
-          tier: newProfile.tier
-        });
+        try {
+          await setDoc(userRef, newProfile);
+          // Sync to public profile
+          await setDoc(doc(db, 'profiles', user.uid), {
+            uid: user.uid,
+            displayName: newProfile.displayName,
+            photoURL: newProfile.photoURL,
+            maxStreak: newProfile.maxStreak,
+            tier: newProfile.tier
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'users');
+        }
       }
     }, (err) => {
-      console.error("Profile listener error:", err);
-      setError("Failed to load profile.");
+      handleFirestoreError(err, OperationType.GET, 'users');
     });
 
     const unsubLog = onSnapshot(logRef, (docSnap) => {
@@ -263,13 +499,16 @@ export default function App() {
           count: 0,
           date: todayStr,
         };
-        setDoc(logRef, newLog);
+        try {
+          setDoc(logRef, newLog);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'logs');
+        }
         setTodayLog(newLog);
       }
       setLoading(false);
     }, (err) => {
-      console.error("Log listener error:", err);
-      setError("Failed to load logs.");
+      handleFirestoreError(err, OperationType.GET, 'logs');
     });
 
     return () => {
@@ -315,7 +554,7 @@ export default function App() {
         settings: { ...profile.settings, ...newSettings }
       });
     } catch (err) {
-      console.error("Settings update error:", err);
+      handleFirestoreError(err, OperationType.WRITE, 'users');
     }
   };
 
@@ -415,7 +654,7 @@ export default function App() {
         navigator.vibrate(50);
       }
     } catch (err) {
-      console.error("Update error:", err);
+      handleFirestoreError(err, OperationType.WRITE, 'logs');
     }
   };
 
@@ -448,57 +687,178 @@ export default function App() {
     );
   }
 
-  return (
-    <div className="min-h-screen bg-salah-bg pb-32">
-      <Header profile={profile} />
-      
-      <main className="px-6 pt-6">
-        <AnimatePresence mode="wait">
-          {activePage === 'home' && (
-            <HomePage 
-              key="home" 
-              profile={profile} 
-              todayLog={todayLog} 
-              onUpdate={updatePrayerStatus} 
-              onPageChange={setActivePage}
-            />
-          )}
-          {activePage === 'tracker' && (
-            <TrackerPage key="tracker" profile={profile} onUpdate={updatePrayerStatus} />
-          )}
-          {activePage === 'medals' && (
-            <MedalsPage key="medals" profile={profile} />
-          )}
-          {activePage === 'settings' && (
-            <SettingsPage 
-              key="settings" 
-              profile={profile} 
-              onLogout={handleLogout} 
-              onUpdateSettings={updateSettings}
-            />
-          )}
-          {activePage === 'leaderboard' && (
-            <LeaderboardPage key="leaderboard" />
-          )}
-          {activePage === 'community' && (
-            <CommunityPage key="community" />
-          )}
-        </AnimatePresence>
-      </main>
+  if (profile && !profile.onboardingCompleted) {
+    return (
+      <ErrorBoundary>
+        <OnboardingPage profile={profile} onComplete={() => updateDoc(doc(db, 'users', user.uid), { onboardingCompleted: true })} onUpdateSettings={updateSettings} />
+      </ErrorBoundary>
+    );
+  }
 
-      <BottomNav activePage={activePage} onPageChange={setActivePage} />
-      
-      {/* Floating Action Button */}
-      {activePage === 'home' && (
-        <button className="fixed bottom-24 right-6 w-14 h-14 bg-salah-gold text-salah-green rounded-full shadow-2xl flex items-center justify-center z-40 hover:scale-110 transition-transform">
-          <Plus className="w-8 h-8" />
-        </button>
-      )}
-    </div>
+  return (
+    <ErrorBoundary>
+      <div className="min-h-screen bg-salah-bg pb-32">
+        <Header profile={profile} />
+        
+        <main className="px-6 pt-6">
+          <AnimatePresence mode="wait">
+            {activePage === 'home' && (
+              <HomePage 
+                key="home" 
+                profile={profile} 
+                todayLog={todayLog} 
+                prayerTimes={prayerTimes}
+                onUpdate={updatePrayerStatus} 
+                onPageChange={setActivePage}
+              />
+            )}
+            {activePage === 'tracker' && (
+              <TrackerPage key="tracker" profile={profile} onUpdate={updatePrayerStatus} />
+            )}
+            {activePage === 'medals' && (
+              <MedalsPage key="medals" profile={profile} />
+            )}
+            {activePage === 'settings' && (
+              <SettingsPage 
+                key="settings" 
+                profile={profile} 
+                onLogout={handleLogout} 
+                onUpdateSettings={updateSettings}
+              />
+            )}
+            {activePage === 'leaderboard' && (
+              <LeaderboardPage key="leaderboard" />
+            )}
+            {activePage === 'community' && (
+              <CommunityPage key="community" />
+            )}
+          </AnimatePresence>
+        </main>
+
+        <BottomNav activePage={activePage} onPageChange={setActivePage} />
+        
+        {/* Floating Action Button */}
+        {activePage === 'home' && (
+          <button className="fixed bottom-24 right-6 w-14 h-14 bg-salah-gold text-salah-green rounded-full shadow-2xl flex items-center justify-center z-40 hover:scale-110 transition-transform">
+            <Plus className="w-8 h-8" />
+          </button>
+        )}
+      </div>
+    </ErrorBoundary>
   );
 }
 
 // --- Components ---
+
+function OnboardingPage({ profile, onComplete, onUpdateSettings }: { profile: UserProfile, onComplete: () => void, onUpdateSettings: (s: Partial<UserProfile['settings']>) => void }) {
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+
+  const handleDetectLocation = () => {
+    setLoading(true);
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(async (position) => {
+        const { latitude, longitude } = position.coords;
+        try {
+          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+          const data = await response.json();
+          const cityName = data.address.city || data.address.town || data.address.village || data.address.suburb || 'Unknown Location';
+          const countryName = data.address.country || '';
+          
+          await onUpdateSettings({
+            location: {
+              name: `${cityName}, ${countryName}`.toUpperCase(),
+              latitude,
+              longitude
+            }
+          });
+          setStep(2);
+        } catch (err) {
+          console.error("Geocoding error:", err);
+          await onUpdateSettings({
+            location: {
+              name: `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`,
+              latitude,
+              longitude
+            }
+          });
+          setStep(2);
+        } finally {
+          setLoading(false);
+        }
+      }, (err) => {
+        console.error("Geolocation error:", err);
+        setLoading(false);
+        alert("Please enable location permissions to sync prayer times.");
+      });
+    } else {
+      setLoading(false);
+      alert("Geolocation is not supported by your browser.");
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-salah-bg flex flex-col items-center justify-center p-6 text-center">
+      <AnimatePresence mode="wait">
+        {step === 1 && (
+          <motion.div 
+            key="step1"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-8 max-w-md"
+          >
+            <div className="w-24 h-24 bg-salah-green/10 rounded-full flex items-center justify-center mx-auto">
+              <MapPin className="w-12 h-12 text-salah-green" />
+            </div>
+            <div className="space-y-4">
+              <h2 className="text-4xl font-serif font-bold text-salah-green">Location Sync</h2>
+              <p className="text-zinc-500">To provide accurate prayer timings, we need to know your location. This ensures your spiritual schedule is perfectly aligned with the sun.</p>
+            </div>
+            <button 
+              onClick={handleDetectLocation}
+              disabled={loading}
+              className="w-full py-4 bg-salah-green text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-3 disabled:opacity-50"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <>
+                  <Compass className="w-5 h-5" />
+                  Detect My Location
+                </>
+              )}
+            </button>
+          </motion.div>
+        )}
+
+        {step === 2 && (
+          <motion.div 
+            key="step2"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-8 max-w-md"
+          >
+            <div className="w-24 h-24 bg-salah-gold/10 rounded-full flex items-center justify-center mx-auto">
+              <Sparkles className="w-12 h-12 text-salah-gold" />
+            </div>
+            <div className="space-y-4">
+              <h2 className="text-4xl font-serif font-bold text-salah-green">All Set!</h2>
+              <p className="text-zinc-500">Your location has been synchronized. Your prayer timings are now perfectly calibrated for {profile.settings.location?.name}.</p>
+            </div>
+            <button 
+              onClick={onComplete}
+              className="w-full py-4 bg-salah-green text-white font-bold rounded-2xl shadow-lg"
+            >
+              Begin My Journey
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 function Header({ profile }: { profile: UserProfile | null }) {
   return (
@@ -510,7 +870,7 @@ function Header({ profile }: { profile: UserProfile | null }) {
         </h1>
       </div>
       <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-salah-green/10">
-        <img src={profile?.photoURL || "https://i.pravatar.cc/150?u=salah"} alt="Profile" className="w-full h-full object-cover" />
+        <img src={profile?.photoURL || "https://i.pravatar.cc/150?u=salah"} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
       </div>
     </header>
   );
@@ -548,11 +908,69 @@ function BottomNav({ activePage, onPageChange }: { activePage: Page, onPageChang
 
 // --- Pages ---
 
-function HomePage({ profile, todayLog, onUpdate, onPageChange }: { profile: UserProfile | null, todayLog: PrayerLog | null, onUpdate: (id: PrayerId, status: PrayerStatus) => void, onPageChange: (p: Page) => void }) {
-  const prayerTimes = useMemo(() => {
-    if (!profile?.settings?.location) return null;
-    return getPrayerTimesForDate(new Date(), profile.settings.location);
-  }, [profile?.settings?.location]);
+function ProgressChart({ data }: { data: { date: string, count: number }[] }) {
+  return (
+    <div className="h-48 w-full mt-4">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data}>
+          <defs>
+            <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#10B981" stopOpacity={0.3}/>
+              <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+          <XAxis 
+            dataKey="date" 
+            axisLine={false} 
+            tickLine={false} 
+            tick={{ fontSize: 10, fill: '#9ca3af' }}
+            tickFormatter={(str) => str ? format(parseISO(str), 'EEE') : ''}
+          />
+          <YAxis hide domain={[0, 5]} />
+          <Tooltip 
+            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+            labelStyle={{ fontWeight: 'bold', color: '#10B981' }}
+          />
+          <Area 
+            type="monotone" 
+            dataKey="count" 
+            stroke="#10B981" 
+            strokeWidth={3}
+            fillOpacity={1} 
+            fill="url(#colorCount)" 
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function HomePage({ profile, todayLog, prayerTimes, onUpdate, onPageChange }: { profile: UserProfile | null, todayLog: PrayerLog | null, prayerTimes: any, onUpdate: (id: PrayerId, status: PrayerStatus) => void, onPageChange: (p: Page) => void }) {
+  const [weeklyStats, setWeeklyStats] = useState<{ date: string, count: number }[]>([]);
+  
+  const inspiration = useMemo(() => {
+    const day = startOfToday().getDate();
+    return DAILY_INSPIRATIONS[day % DAILY_INSPIRATIONS.length];
+  }, []);
+
+  useEffect(() => {
+    if (!profile) return;
+    const fetchStats = async () => {
+      const stats: { date: string, count: number }[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const date = format(subDays(startOfToday(), i), 'yyyy-MM-dd');
+        const logRef = doc(db, 'users', profile.uid, 'logs', date);
+        const snap = await getDoc(logRef);
+        stats.push({
+          date,
+          count: snap.exists() ? snap.data().count : 0
+        });
+      }
+      setWeeklyStats(stats);
+    };
+    fetchStats();
+  }, [profile, todayLog]); // Re-fetch when today's log changes
 
   const currentFocus = useMemo(() => {
     if (!prayerTimes) return PRAYERS[1]; // Default to Dhuhr
@@ -607,6 +1025,28 @@ function HomePage({ profile, todayLog, onUpdate, onPageChange }: { profile: User
         </div>
         <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-white/5 rounded-full blur-3xl" />
       </div>
+
+      {/* Daily Inspiration */}
+      <div className="bg-white rounded-[32px] p-6 shadow-sm border border-zinc-100 flex items-center gap-4">
+        <div className="w-12 h-12 bg-salah-gold/20 rounded-2xl flex items-center justify-center flex-shrink-0">
+          <Moon className="w-6 h-6 text-salah-gold" />
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-serif italic text-zinc-600">"{inspiration.text}"</p>
+          <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">— {inspiration.source}</p>
+        </div>
+      </div>
+
+      {/* Progress Chart */}
+      <section className="space-y-4">
+        <div className="flex items-center justify-between px-2">
+          <h3 className="text-xl font-serif font-bold text-salah-green">Weekly Consistency</h3>
+          <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Last 7 Days</p>
+        </div>
+        <div className="bg-white rounded-[32px] p-6 shadow-sm border border-zinc-100">
+          <ProgressChart data={weeklyStats} />
+        </div>
+      </section>
 
       {/* Daily Salah Section */}
       <section className="space-y-6">
@@ -691,6 +1131,7 @@ function HomePage({ profile, todayLog, onUpdate, onPageChange }: { profile: User
 function TrackerPage({ profile, onUpdate }: { profile: UserProfile | null, onUpdate: (id: PrayerId, status: PrayerStatus, date: string) => void }) {
   const [selectedDate, setSelectedDate] = useState(startOfToday());
   const [selectedLog, setSelectedLog] = useState<PrayerLog | null>(null);
+  const [prayerTimes, setPrayerTimes] = useState<any>(null);
 
   const weekDays = eachDayOfInterval({
     start: startOfWeek(startOfToday(), { weekStartsOn: 1 }),
@@ -708,13 +1149,19 @@ function TrackerPage({ profile, onUpdate }: { profile: UserProfile | null, onUpd
       } else {
         setSelectedLog(null);
       }
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, 'logs');
     });
     return unsub;
   }, [profile, dateStr]);
 
-  const prayerTimes = useMemo(() => {
-    if (!profile?.settings?.location) return null;
-    return getPrayerTimesForDate(selectedDate, profile.settings.location);
+  useEffect(() => {
+    if (!profile?.settings?.location) return;
+    const fetchTimes = async () => {
+      const times = await fetchPrayerTimesFromAPI(selectedDate, profile.settings.location);
+      setPrayerTimes(times);
+    };
+    fetchTimes();
   }, [profile?.settings?.location, selectedDate]);
 
   return (
@@ -941,7 +1388,7 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
       <div className="bg-white rounded-[40px] p-10 shadow-sm text-center space-y-6 relative overflow-hidden border border-zinc-100">
         <div className="relative inline-block">
           <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-salah-bg shadow-xl">
-            <img src={profile?.photoURL || "https://i.pravatar.cc/300"} alt="Avatar" className="w-full h-full object-cover" />
+            <img src={profile?.photoURL || "https://i.pravatar.cc/300"} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
           </div>
           <button className="absolute bottom-1 right-1 w-10 h-10 bg-salah-gold rounded-full flex items-center justify-center shadow-lg border-4 border-white">
             <Plus className="w-5 h-5 text-salah-green" />
@@ -1001,6 +1448,27 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
         <section className="space-y-4">
           <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.3em] px-2">Awareness</h4>
           <div className="bg-white rounded-[32px] overflow-hidden shadow-sm border border-zinc-100 divide-y divide-zinc-50">
+            <div className="p-6 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-zinc-50 rounded-2xl flex items-center justify-center">
+                  <Bell className="w-6 h-6 text-salah-green" />
+                </div>
+                <div>
+                  <p className="font-serif font-bold text-lg">Notifications</p>
+                  <p className="text-xs text-zinc-400">
+                    {Notification.permission === 'granted' ? 'Enabled' : Notification.permission === 'denied' ? 'Blocked by browser' : 'Not requested'}
+                  </p>
+                </div>
+              </div>
+              {Notification.permission === 'default' && (
+                <button 
+                  onClick={() => Notification.requestPermission()}
+                  className="px-4 py-2 bg-salah-green text-white text-[10px] font-bold uppercase tracking-widest rounded-xl"
+                >
+                  Enable
+                </button>
+              )}
+            </div>
             <div className="p-6 flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 bg-zinc-50 rounded-2xl flex items-center justify-center">
@@ -1071,6 +1539,24 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
           <LogOut className="w-6 h-6" />
           Sign Out of Sanctuary
         </button>
+
+        <section className="space-y-4">
+          <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.3em] px-2">Developer</h4>
+          <div className="bg-white rounded-[32px] p-6 shadow-sm border border-zinc-100 flex items-center gap-6">
+            <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-salah-green/10">
+              <img 
+                src="https://storage.googleapis.com/static.ai.studio.google.com/content/67882212625/67882212625_171306_0.png" 
+                alt="Abdul Haseeb" 
+                className="w-full h-full object-cover" 
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            <div>
+              <p className="font-serif font-bold text-xl text-salah-green">Abdul Haseeb</p>
+              <p className="text-xs text-zinc-400 font-medium">Lead Developer & Visionary</p>
+            </div>
+          </div>
+        </section>
 
         <div className="text-center space-y-1 pb-12">
           <p className="text-[10px] font-black text-zinc-300 uppercase tracking-[0.4em]">Salah Streak v2.0</p>
@@ -1157,6 +1643,8 @@ function CommunityPage() {
       const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Achievement));
       setAchievements(data);
       setLoading(false);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, 'achievements');
     });
 
     return () => unsub();
@@ -1197,7 +1685,7 @@ function CommunityPage() {
               className="bg-white rounded-[32px] p-6 shadow-sm border border-zinc-100 flex items-center gap-6"
             >
               <div className="relative">
-                <img src={achievement.photoURL} alt="" className="w-14 h-14 rounded-full object-cover border-2 border-white shadow-md" />
+                <img src={achievement.photoURL} alt="" className="w-14 h-14 rounded-full object-cover border-2 border-white shadow-md" referrerPolicy="no-referrer" />
                 <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-salah-gold rounded-full flex items-center justify-center shadow-sm">
                   {achievement.type === 'streak' && <Flame className="w-3 h-3 text-salah-green" />}
                   {achievement.type === 'medal' && <Medal className="w-3 h-3 text-salah-green" />}
@@ -1239,7 +1727,7 @@ function LeaderboardPage() {
         const users = querySnapshot.docs.map(doc => doc.data() as UserProfile);
         setTopUsers(users);
       } catch (err) {
-        console.error("Error fetching leaderboard:", err);
+        handleFirestoreError(err, OperationType.LIST, 'profiles');
       } finally {
         setLoading(false);
       }
@@ -1283,7 +1771,7 @@ function LeaderboardPage() {
                     {index + 1}
                   </div>
                   <div className="flex items-center gap-4">
-                    <img src={user.photoURL} alt="" className="w-12 h-12 rounded-full object-cover border-2 border-white shadow-sm" />
+                    <img src={user.photoURL} alt="" className="w-12 h-12 rounded-full object-cover border-2 border-white shadow-sm" referrerPolicy="no-referrer" />
                     <div>
                       <p className="font-serif font-bold text-lg">{user.displayName}</p>
                       <p className="text-[10px] font-black tracking-widest uppercase text-zinc-400">{user.tier} Tier</p>
