@@ -21,6 +21,7 @@ service cloud.firestore {
     //   - tier: string (optional, Bronze/Silver/Gold/Platinum/Diamond)
     //   - joinedDate: string (optional, YYYY-MM-DD)
     //   - settings: map (optional)
+    //   - role: string (optional, client/admin)
     //
     // Collection: users/{userId}/logs
     // Document ID: {date} (YYYY-MM-DD)
@@ -51,6 +52,12 @@ service cloud.firestore {
 
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "abdulhaseeb5050@gmail.com" && request.auth.token.email_verified == true)); // Default admin
     }
 
     function isValidUser(data) {
@@ -93,12 +100,12 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && ((isOwner(userId) && request.resource.data.role == 'client') || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
       
       match /logs/{date} {
-        allow read: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && isValidLog(request.resource.data);
         allow update: if isOwner(userId) && isValidLog(request.resource.data);
       }
@@ -106,8 +113,8 @@ service cloud.firestore {
 
     match /profiles/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isOwner(userId) && isValidProfile(request.resource.data);
-      allow update: if isOwner(userId) && isValidProfile(request.resource.data);
+      allow create: if (isOwner(userId) && isValidProfile(request.resource.data)) || isAdmin();
+      allow update: if (isOwner(userId) && isValidProfile(request.resource.data)) || isAdmin();
     }
 
     match /achievements/{achievementId} {

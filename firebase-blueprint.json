@@ -16,6 +16,7 @@
         "medalsUnlocked": { "type": "integer" },
         "tier": { "type": "string", "enum": ["Bronze", "Silver", "Gold", "Platinum", "Diamond"] },
         "joinedDate": { "type": "string", "format": "date" },
+        "role": { "type": "string", "enum": ["client", "admin"] },
         "settings": {
           "type": "object",
           "properties": {

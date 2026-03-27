@@ -199,6 +199,7 @@ interface UserProfile {
   tier: string;
   joinedDate: string;
   onboardingCompleted: boolean;
+  role: 'client' | 'admin';
   settings: {
     hapticFeedback: boolean;
     theme: 'light' | 'dark';
@@ -475,6 +476,7 @@ export default function App() {
           tier: 'Bronze',
           joinedDate: todayStr,
           onboardingCompleted: false,
+          role: 'client',
           settings: {
             hapticFeedback: true,
             theme: 'light',
