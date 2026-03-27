@@ -86,6 +86,8 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { useRegisterSW } from 'virtual:pwa-register/react';
+import { Download, WifiOff, X } from 'lucide-react';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -326,8 +328,61 @@ export default function App() {
   const [activePage, setActivePage] = useState<Page>('home');
   const [notifiedPrayers, setNotifiedPrayers] = useState<Set<string>>(new Set());
   const [prayerTimes, setPrayerTimes] = useState<any>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+
+  // PWA Registration
+  const {
+    offlineReady: [offlineReady, setOfflineReady],
+    needRefresh: [needRefresh, setNeedRefresh],
+    updateServiceWorker,
+  } = useRegisterSW({
+    onRegistered(r) {
+      console.log('SW Registered: ' + r);
+    },
+    onRegisterError(error) {
+      console.log('SW registration error', error);
+    },
+  });
 
   const todayStr = format(startOfToday(), 'yyyy-MM-dd');
+
+  // Online/Offline status
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Install Prompt
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallBanner(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`User response to the install prompt: ${outcome}`);
+    setDeferredPrompt(null);
+    setShowInstallBanner(false);
+  };
 
   // Notification Permission & Scheduling
   useEffect(() => {
@@ -714,6 +769,99 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+      {/* Offline Status */}
+      <AnimatePresence>
+        {!isOnline && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] bg-zinc-800 text-white px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium shadow-xl"
+          >
+            <WifiOff className="w-4 h-4" />
+            Working Offline
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* PWA Update Banner */}
+      <AnimatePresence>
+        {(offlineReady || needRefresh) && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-24 left-4 right-4 z-[100] bg-white border border-zinc-100 p-4 rounded-3xl shadow-2xl flex flex-col gap-3"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-salah-green/10 rounded-full flex items-center justify-center">
+                  <Smartphone className="w-5 h-5 text-salah-green" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-zinc-800">
+                    {offlineReady ? "App ready for offline use" : "New version available!"}
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    {offlineReady ? "You can now use Salah Streak without internet." : "Click update to get the latest features."}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => { setOfflineReady(false); setNeedRefresh(false); }}
+                className="p-2 text-zinc-400 hover:text-zinc-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {needRefresh && (
+              <button 
+                onClick={() => updateServiceWorker(true)}
+                className="w-full py-3 bg-salah-green text-white font-bold rounded-2xl shadow-lg"
+              >
+                Update Now
+              </button>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Install Banner */}
+      <AnimatePresence>
+        {showInstallBanner && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-24 left-4 right-4 z-[100] bg-white border border-zinc-100 p-4 rounded-3xl shadow-2xl flex items-center justify-between"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-salah-gold/10 rounded-full flex items-center justify-center">
+                <Download className="w-5 h-5 text-salah-gold" />
+              </div>
+              <div>
+                <h3 className="font-bold text-zinc-800 text-sm">Install Salah Streak</h3>
+                <p className="text-xs text-zinc-500">Add to home screen for quick access</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setShowInstallBanner(false)}
+                className="px-4 py-2 text-zinc-400 text-sm font-bold"
+              >
+                Later
+              </button>
+              <button 
+                onClick={handleInstallClick}
+                className="px-4 py-2 bg-salah-green text-white text-sm font-bold rounded-xl shadow-lg"
+              >
+                Install
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="min-h-screen bg-salah-bg pb-32">
         <Header profile={profile} />
         
@@ -1689,7 +1837,7 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
           <div className="bg-white rounded-[32px] p-6 shadow-sm border border-zinc-100 flex items-center gap-6">
             <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-salah-green/10">
               <img 
-                src="https://raw.githubusercontent.com/haseebno1/Salah-Streak/main/src/retouch_2025121721320040.jpg" 
+                src="https://storage.googleapis.com/static.ai.studio.google.com/content/67882212625/67882212625_171306_0.png" 
                 alt="Abdul Haseeb" 
                 className="w-full h-full object-cover" 
                 referrerPolicy="no-referrer"
