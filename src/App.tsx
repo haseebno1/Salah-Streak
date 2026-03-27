@@ -1837,7 +1837,7 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
           <div className="bg-white rounded-[32px] p-6 shadow-sm border border-zinc-100 flex items-center gap-6">
             <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-salah-green/10">
               <img 
-                src="https://storage.googleapis.com/static.ai.studio.google.com/content/67882212625/67882212625_171306_0.png" 
+                src="https://raw.githubusercontent.com/haseebno1/Salah-Streak/main/src/retouch_2025121721320040.jpg" 
                 alt="Abdul Haseeb" 
                 className="w-full h-full object-cover" 
                 referrerPolicy="no-referrer"
@@ -1845,7 +1845,7 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
             </div>
             <div>
               <p className="font-serif font-bold text-xl text-salah-green">Abdul Haseeb</p>
-              <p className="text-xs text-zinc-400 font-medium">Lead Developer & Visionary</p>
+              <p className="text-xs text-zinc-400 font-medium">Developer & Visionary</p>
             </div>
           </div>
         </section>
