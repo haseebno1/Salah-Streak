@@ -771,11 +771,60 @@ export default function App() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [manualCity, setManualCity] = useState("");
+  const [showManual, setShowManual] = useState(false);
+
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualCity.trim()) return;
+    
+    setLoading(true);
+    setOnboardingError(null);
+    try {
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(manualCity)}&limit=1`);
+      const data = await response.json();
+      
+      if (data && data.length > 0) {
+        const { lat, lon, display_name } = data[0];
+        await onUpdateSettings({
+          location: {
+            name: display_name.split(',')[0].toUpperCase(),
+            latitude: parseFloat(lat),
+            longitude: parseFloat(lon)
+          }
+        });
+        setStep(2);
+      } else {
+        setOnboardingError("Could not find that location. Please try a different city name.");
+      }
+    } catch (err) {
+      console.error("Manual geocoding error:", err);
+      setOnboardingError("Failed to search for location. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleDetectLocation = () => {
+    if (!window.isSecureContext) {
+      setOnboardingError("Location detection requires a secure (HTTPS) connection. Please check your URL.");
+      return;
+    }
+
     setLoading(true);
     setOnboardingError(null);
     if ("geolocation" in navigator) {
+      // Check permission status if possible
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'geolocation' }).then((result) => {
+          if (result.state === 'denied') {
+            setOnboardingError("Location access is blocked in your browser settings. Please enable it for this site.");
+            setLoading(false);
+            return;
+          }
+        }).catch(err => console.warn("Permission query not supported", err));
+      }
+
       navigator.geolocation.getCurrentPosition(async (position) => {
         const { latitude, longitude } = position.coords;
         try {
@@ -808,7 +857,19 @@ export default function App() {
       }, (err) => {
         console.error("Geolocation error:", err);
         setLoading(false);
-        setOnboardingError("Please enable location permissions to sync prayer times.");
+        if (err.code === 1) {
+          setOnboardingError("Location access was denied. Please check your browser's permission settings for this site.");
+        } else if (err.code === 2) {
+          setOnboardingError("Location information is unavailable. Please try again or enter manually.");
+        } else if (err.code === 3) {
+          setOnboardingError("The request to get user location timed out. Please try again.");
+        } else {
+          setOnboardingError("An unknown error occurred while detecting your location.");
+        }
+      }, {
+        enableHighAccuracy: false,
+        timeout: 10000,
+        maximumAge: 60000
       });
     } else {
       setLoading(false);
@@ -841,20 +902,59 @@ export default function App() {
               </div>
             )}
 
-            <button 
-              onClick={handleDetectLocation}
-              disabled={loading}
-              className="w-full py-4 bg-salah-green text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-3 disabled:opacity-50"
-            >
-              {loading ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : (
+            <div className="space-y-4">
+              {!showManual ? (
                 <>
-                  <Compass className="w-5 h-5" />
-                  Detect My Location
+                  <button 
+                    onClick={handleDetectLocation}
+                    disabled={loading}
+                    className="w-full py-4 bg-salah-green text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-3 disabled:opacity-50"
+                  >
+                    {loading ? (
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <>
+                        <Compass className="w-5 h-5" />
+                        Detect My Location
+                      </>
+                    )}
+                  </button>
+                  <button 
+                    onClick={() => setShowManual(true)}
+                    className="text-xs font-bold text-zinc-400 uppercase tracking-widest hover:text-salah-green transition-colors"
+                  >
+                    Enter Manually
+                  </button>
                 </>
+              ) : (
+                <form onSubmit={handleManualSubmit} className="space-y-4">
+                  <input 
+                    type="text" 
+                    placeholder="Enter City Name (e.g. London)" 
+                    value={manualCity}
+                    onChange={(e) => setManualCity(e.target.value)}
+                    className="w-full px-6 py-4 bg-white border border-zinc-100 rounded-2xl outline-none focus:border-salah-green transition-colors text-center font-serif text-lg"
+                    autoFocus
+                  />
+                  <div className="flex gap-3">
+                    <button 
+                      type="button"
+                      onClick={() => setShowManual(false)}
+                      className="flex-1 py-4 bg-zinc-100 text-zinc-500 font-bold rounded-2xl"
+                    >
+                      Back
+                    </button>
+                    <button 
+                      type="submit"
+                      disabled={loading || !manualCity.trim()}
+                      className="flex-[2] py-4 bg-salah-green text-white font-bold rounded-2xl shadow-lg disabled:opacity-50"
+                    >
+                      {loading ? "Searching..." : "Confirm Location"}
+                    </button>
+                  </div>
+                </form>
               )}
-            </button>
+            </div>
           </motion.div>
         )}
 
@@ -1378,19 +1478,37 @@ function SettingsPage({ profile, onLogout, onUpdateSettings }: { profile: UserPr
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(async (position) => {
         const { latitude, longitude } = position.coords;
-        // In a real app, we'd use reverse geocoding to get the name
-        // For now, we'll just use the coordinates
-        onUpdateSettings({
-          location: {
-            name: `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`,
-            latitude,
-            longitude
-          }
-        });
-        setDetectingLocation(false);
+        try {
+          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+          const data = await response.json();
+          const cityName = data.address.city || data.address.town || data.address.village || data.address.suburb || 'Unknown Location';
+          const countryName = data.address.country || '';
+          
+          onUpdateSettings({
+            location: {
+              name: `${cityName}, ${countryName}`.toUpperCase(),
+              latitude,
+              longitude
+            }
+          });
+        } catch (err) {
+          console.error("Geocoding error:", err);
+          onUpdateSettings({
+            location: {
+              name: `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`,
+              latitude,
+              longitude
+            }
+          });
+        } finally {
+          setDetectingLocation(false);
+        }
       }, (err) => {
         console.error("Location error:", err);
         setDetectingLocation(false);
+        if (err.code === 1) {
+          alert("Location access was denied. Please check your browser's permission settings.");
+        }
       });
     } else {
       setDetectingLocation(false);

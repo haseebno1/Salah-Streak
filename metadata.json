@@ -1,5 +1,5 @@
 {
   "name": "Salah Streak",
   "description": "A daily namaz tracker that motivates users through streaks, consistency, and a global leaderboard.",
-  "requestFramePermissions": []
+  "requestFramePermissions": ["geolocation"]
 }
